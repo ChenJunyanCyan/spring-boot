@@ -374,45 +374,85 @@ public class SpringApplication {
 		return (environmentType != null) ? environmentType : ApplicationEnvironment.class;
 	}
 
+	/**
+	 * 准备应用上下文，在上下文刷新之前执行各种配置和初始化工作
+	 * @param bootstrapContext 引导上下文，用于在应用启动早期共享数据
+	 * @param context 待配置的应用上下文
+	 * @param environment 应用环境，包含配置属性和profile信息
+	 * @param listeners 应用运行监听器，用于发布启动事件
+	 * @param applicationArguments 应用命令行参数
+	 * @param printedBanner 打印的Banner信息
+	 */
 	private void prepareContext(DefaultBootstrapContext bootstrapContext, ConfigurableApplicationContext context,
 			ConfigurableEnvironment environment, SpringApplicationRunListeners listeners,
 			ApplicationArguments applicationArguments, Banner printedBanner) {
+		// 将环境设置到应用上下文中
 		context.setEnvironment(environment);
+		
+		// 后处理应用上下文，例如注册BeanNameGenerator、ResourceLoader等
 		postProcessApplicationContext(context);
+		
+		// 如果使用AOT（提前编译）模式，添加AOT生成的初始化器
 		addAotGeneratedInitializerIfNecessary(this.initializers);
+		
+		// 应用所有ApplicationContextInitializer，对上下文进行自定义初始化
 		applyInitializers(context);
+		
+		// 通知监听器：上下文已准备完成
 		listeners.contextPrepared(context);
+		
+		// 关闭引导上下文，并将其内容传递给应用上下文
 		bootstrapContext.close(context);
+		
+		// 打印应用启动信息（包括版本、profile等）
 		if (this.properties.isLogStartupInfo()) {
 			logStartupInfo(context.getParent() == null);
 			logStartupInfo(context);
 			logStartupProfileInfo(context);
 		}
-		// Add boot specific singleton beans
+		
+		// 添加Spring Boot特定的单例Bean
 		ConfigurableListableBeanFactory beanFactory = context.getBeanFactory();
+		// 注册命令行参数为单例Bean，可通过名称"springApplicationArguments"获取
 		beanFactory.registerSingleton("springApplicationArguments", applicationArguments);
+		// 注册Banner为单例Bean，可通过名称"springBootBanner"获取
 		if (printedBanner != null) {
 			beanFactory.registerSingleton("springBootBanner", printedBanner);
 		}
+		
+		// 配置Bean工厂的高级特性
 		if (beanFactory instanceof AbstractAutowireCapableBeanFactory autowireCapableBeanFactory) {
+			// 设置是否允许循环引用（默认为false）
 			autowireCapableBeanFactory.setAllowCircularReferences(this.properties.isAllowCircularReferences());
 			if (beanFactory instanceof DefaultListableBeanFactory listableBeanFactory) {
+				// 设置是否允许Bean定义覆盖（默认为false）
 				listableBeanFactory.setAllowBeanDefinitionOverriding(this.properties.isAllowBeanDefinitionOverriding());
 			}
 		}
+		
+		// 如果启用了懒加载，添加懒加载的BeanFactoryPostProcessor
 		if (this.properties.isLazyInitialization()) {
 			context.addBeanFactoryPostProcessor(new LazyInitializationBeanFactoryPostProcessor());
 		}
+		
+		// 如果启用了KeepAlive，添加应用监听器以保持JVM运行
 		if (this.properties.isKeepAlive()) {
 			context.addApplicationListener(new KeepAlive());
 		}
+		
+		// 添加属性源排序的BeanFactoryPostProcessor，确保属性源的优先级正确
 		context.addBeanFactoryPostProcessor(new PropertySourceOrderingBeanFactoryPostProcessor(context));
+		
+		// 如果不是AOT模式，加载所有配置的源（配置类、XML等）
 		if (!AotDetector.useGeneratedArtifacts()) {
-			// Load the sources
+			// 获取所有数据源
 			Set<Object> sources = getAllSources();
 			Assert.state(!ObjectUtils.isEmpty(sources), "No sources defined");
+			// 将源加载到应用上下文中
 			load(context, sources.toArray(new Object[0]));
 		}
+		
+		// 通知监听器：上下文已加载完成，即将进入刷新阶段
 		listeners.contextLoaded(context);
 	}
 

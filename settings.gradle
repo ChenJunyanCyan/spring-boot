@@ -17,6 +17,12 @@
 pluginManagement {
 	evaluate(new File("${rootDir}/buildSrc/SpringRepositorySupport.groovy")).apply(this)
 	repositories {
+		maven {
+			url 'https://maven.aliyun.com/repository/gradle-plugin'
+		}
+		maven {
+			url 'https://maven.aliyun.com/repository/public'
+		}
 		mavenCentral()
 		gradlePluginPortal()
 		spring.mavenRepositories()
