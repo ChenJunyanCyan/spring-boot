@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>轨道堆叠合成</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1a1a2e;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+    }
+    #gameCanvas {
+      background: linear-gradient(180deg, #16213e 0%, #1a1a2e 100%);
+      border-radius: 8px;
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="gameCanvas"></canvas>
+  <script>
+    // ==================== 常量配置 ====================
+    const CONFIG = {
+      WIDTH: 400,
+      HEIGHT: 700,
+      STICK_COUNT: 5,
+      STICK_WIDTH: 8,
+      STICK_HEIGHT: 450,
+      BALL_RADIUS: 22,
+      STICK_START_Y: 180,
+      STICK_GAP: 75,
+      GROUND_Y: 650,
+      LAUNCHER_Y: 80,
+      PREVIEW_STICK_X: 60,
+      MERGE_COUNT: 3
+    };
+
+    const COLORS = {
+      1: '#FF6B6B', 2: '#4ECDC4', 3: '#45B7D1',
+      4: '#96CEB4', 5: '#FFEAA7', 6: '#DDA0DD',
+      7: '#FF9F43', 8: '#6C5CE7', 9: '#00CEC9', 10: '#E17055'
+    };
+
+    // ==================== 工具函数 ====================
+    function getStickX(index) {
+      const totalWidth = (CONFIG.STICK_COUNT - 1) * CONFIG.STICK_GAP;
+      const startX = (CONFIG.WIDTH - totalWidth) / 2;
+      return startX + index * CONFIG.STICK_GAP;
+    }
+
+    function bezier(t, p0, p1, p2, p3) {
+      const mt = 1 - t;
+      return {
+        x: mt**3 * p0.x + 3 * mt**2 * t * p1.x + 3 * mt * t**2 * p2.x + t**3 * p3.x,
+        y: mt**3 * p0.y + 3 * mt**2 * t * p1.y + 3 * mt * t**2 * p2.y + t**3 * p3.y
+      };
+    }
+
+    // ==================== 球体类 ====================
+    class Ball {
+      constructor(level, x, y) {
+        this.id = Math.random();
+        this.level = level;
+        this.x = x;
+        this.y = y;
+        this.vx = 0;
+        this.vy = 0;
+        this.state = 'ready'; // ready, flying, resting, dissolving
+        this.color = COLORS[level] || '#888';
+        this.opacity = 1;
+        this.scale = 1;
+      }
+    }
+
+    // ==================== 游戏类 ====================
+    class Game {
+      constructor() {
+        this.canvas = document.getElementById('gameCanvas');
+        this.ctx = this.canvas.getContext('2d');
+        this.canvas.width = CONFIG.WIDTH;
+        this.canvas.height = CONFIG.HEIGHT;
+
+        this.sticks = [];
+        this.currentBall = null;
+        this.nextBall = null;
+        this.score = 0;
+        this.gamePhase = 'ready'; // ready, aiming, flying, landing, merging, gameover
+
+        this.touchStartX = 0;
+        this.touchStartY = 0;
+        this.touchCurrentX = 0;
+        this.touchCurrentY = 0;
+
+        this.flyProgress = 0;
+        this.flyStartPos = null;
+        this.flyTargetStick = null;
+        this.flyControlPoints = [];
+
+        this.dissolvingBalls = [];
+        this.mergeLock = false;
+
+        this.init();
+      }
+
+      init() {
+        // 初始化棍子
+        for (let i = 0; i < CONFIG.STICK_COUNT; i++) {
+          this.sticks.push({
+            id: i,
+            x: getStickX(i),
+            y: CONFIG.GROUND_Y,
+            balls: []
+          });
+        }
+
+        // 初始化球
+        this.currentBall = this.createRandomBall();
+        this.currentBall.x = CONFIG.WIDTH / 2;
+        this.currentBall.y = CONFIG.LAUNCHER_Y;
+
+        this.nextBall = this.createRandomBall();
+        this.nextBall.x = CONFIG.PREVIEW_STICK_X;
+        this.nextBall.y = 50;
+
+        this.bindEvents();
+        this.startGameLoop();
+      }
+
+      createRandomBall(minLevel = 1) {
+        const level = Math.random() < 0.7 ? minLevel : minLevel + 1;
+        return new Ball(Math.min(level, 4), 0, 0);
+      }
+
+      bindEvents() {
+        const canvas = this.canvas;
+
+        // 触摸事件
+        canvas.addEventListener('touchstart', (e) => {
+          e.preventDefault();
+          if (this.gamePhase !== 'ready') return;
+          const touch = e.touches[0];
+          this.touchStartX = touch.clientX;
+          this.touchStartY = touch.clientY;
+          this.touchCurrentX = touch.clientX;
+          this.touchCurrentY = touch.clientY;
+          this.gamePhase = 'aiming';
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+          e.preventDefault();
+          if (this.gamePhase !== 'aiming') return;
+          const touch = e.touches[0];
+          this.touchCurrentX = touch.clientX;
+          this.touchCurrentY = touch.clientY;
+        });
+
+        canvas.addEventListener('touchend', (e) => {
+          e.preventDefault();
+          if (this.gamePhase !== 'aiming') return;
+          this.launchBall();
+        });
+
+        // 鼠标事件（桌面适配）
+        canvas.addEventListener('mousedown', (e) => {
+          if (this.gamePhase !== 'ready') return;
+          this.touchStartX = e.clientX;
+          this.touchStartY = e.clientY;
+          this.touchCurrentX = e.clientX;
+          this.touchCurrentY = e.clientY;
+          this.gamePhase = 'aiming';
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+          if (this.gamePhase !== 'aiming') return;
+          this.touchCurrentX = e.clientX;
+          this.touchCurrentY = e.clientY;
+        });
+
+        canvas.addEventListener('mouseup', () => {
+          if (this.gamePhase !== 'aiming') return;
+          this.launchBall();
+        });
+      }
+
+      launchBall() {
+        const dx = this.touchCurrentX - this.touchStartX;
+        const dy = this.touchCurrentY - this.touchStartY;
+
+        // 力度
+        const power = Math.min(Math.sqrt(dx * dx + dy * dy) / 100, 1.5);
+
+        // 根据滑动的水平方向决定落向哪根棍子
+        const centerX = CONFIG.WIDTH / 2;
+        let targetStickIndex = Math.floor(this.sticks.length / 2);
+
+        if (Math.abs(dx) > 10) {
+          const ratio = dx / 150;
+          targetStickIndex = Math.floor(this.sticks.length / 2 + ratio);
+          targetStickIndex = Math.max(0, Math.min(this.sticks.length - 1, targetStickIndex));
+        }
+
+        this.flyTargetStick = this.sticks[targetStickIndex];
+        this.flyStartPos = { x: this.currentBall.x, y: this.currentBall.y };
+        this.flyProgress = 0;
+
+        const endPos = { x: this.flyTargetStick.x, y: this.flyTargetStick.y };
+
+        // 计算控制点
+        const angle = Math.atan2(-dy, dx);
+        const midY = Math.min(this.flyStartPos.y, endPos.y) - power * 100;
+        this.flyControlPoints = [
+          this.flyStartPos,
+          { x: this.flyStartPos.x + Math.cos(angle) * power * 80, y: this.flyStartPos.y - 50 },
+          { x: endPos.x - Math.cos(angle) * power * 50, y: midY },
+          endPos
+        ];
+
+        this.currentBall.state = 'flying';
+        this.gamePhase = 'flying';
+      }
+
+      update() {
+        if (this.gamePhase === 'flying') {
+          this.flyProgress += 0.04;
+
+          if (this.flyProgress >= 1) {
+            this.flyProgress = 1;
+            this.landBall();
+          }
+
+          const pos = bezier(
+            this.flyProgress,
+            this.flyControlPoints[0],
+            this.flyControlPoints[1],
+            this.flyControlPoints[2],
+            this.flyControlPoints[3]
+          );
+          this.currentBall.x = pos.x;
+          this.currentBall.y = pos.y;
+        }
+
+        if (this.gamePhase === 'landing') {
+          this.updateLanding();
+        }
+
+        if (this.gamePhase === 'merging') {
+          this.updateMerging();
+        }
+
+        // 更新溶解动画
+        this.dissolvingBalls = this.dissolvingBalls.filter(b => {
+          b.opacity -= 0.08;
+          b.scale -= 0.05;
+          return b.opacity > 0;
+        });
+      }
+
+      landBall() {
+        // 吸附到棍子上
+        const stick = this.flyTargetStick;
+        const stackHeight = stick.balls.length * (CONFIG.BALL_RADIUS * 2 - 5);
+        this.currentBall.x = stick.x;
+        this.currentBall.y = stick.y - stackHeight - CONFIG.BALL_RADIUS;
+        this.currentBall.state = 'resting';
+
+        // 插入棍子
+        stick.balls.push(this.currentBall);
+        this.gamePhase = 'merging';
+        this.checkMerge(stick);
+      }
+
+      updateLanding() {
+        // 吸附动画中
+      }
+
+      checkMerge(stick) {
+        if (this.mergeLock) return;
+
+        const balls = stick.balls;
+        if (balls.length < CONFIG.MERGE_COUNT) {
+          this.finishTurn();
+          return;
+        }
+
+        // 从下到上检查是否有3个连续相同等级
+        for (let i = 0; i <= balls.length - CONFIG.MERGE_COUNT; i++) {
+          const level = balls[i].level;
+          let count = 1;
+
+          for (let j = i + 1; j < balls.length; j++) {
+            if (balls[j].level === level) {
+              count++;
+            } else {
+              break;
+            }
+          }
+
+          if (count >= CONFIG.MERGE_COUNT) {
+            this.executeMerge(stick, i, count, level);
+            return;
+          }
+        }
+
+        this.finishTurn();
+      }
+
+      executeMerge(stick, startIndex, count, level) {
+        this.mergeLock = true;
+
+        const mergeBalls = stick.balls.splice(startIndex, count);
+        const middleIndex = Math.floor(count / 2);
+        const newY = mergeBalls[middleIndex].y;
+
+        // 溶解动画
+        mergeBalls.forEach(b => {
+          b.state = 'dissolving';
+          b.opacity = 1;
+          b.scale = 1;
+          this.dissolvingBalls.push(b);
+        });
+
+        this.score += count * level * 10;
+
+        // 创建新球
+        const newBall = new Ball(level + 1, stick.x, newY);
+        newBall.state = 'resting';
+
+        setTimeout(() => {
+          // 移除溶解的球
+          stick.balls = stick.balls.filter(b => b.state !== 'dissolving');
+
+          // 插入新球
+          let insertPos = 0;
+          for (let i = 0; i < stick.balls.length; i++) {
+            if (newY > stick.balls[i].y) insertPos = i + 1;
+          }
+          stick.balls.splice(insertPos, 0, newBall);
+
+          // 重新排列堆叠
+          this.rearrangeStick(stick);
+
+          this.mergeLock = false;
+
+          // 检查是否还有合成链
+          this.checkMerge(stick);
+        }, 300);
+      }
+
+      rearrangeStick(stick) {
+        let y = stick.y - CONFIG.BALL_RADIUS;
+        stick.balls.forEach((ball, i) => {
+          ball.x = stick.x;
+          ball.y = y;
+          y -= CONFIG.BALL_RADIUS * 2 - 5;
+        });
+      }
+
+      finishTurn() {
+        // 检查游戏结束
+        if (this.sticks.some(s => s.balls.length >= 8)) {
+          this.gamePhase = 'gameover';
+          return;
+        }
+
+        // 下一球
+        this.currentBall = this.nextBall;
+        this.currentBall.x = CONFIG.WIDTH / 2;
+        this.currentBall.y = CONFIG.LAUNCHER_Y;
+        this.currentBall.state = 'ready';
+
+        this.nextBall = this.createRandomBall();
+        this.nextBall.x = CONFIG.PREVIEW_STICK_X;
+        this.nextBall.y = 50;
+
+        this.gamePhase = 'ready';
+      }
+
+      updateMerging() {
+        // 合并动画中
+      }
+
+      draw() {
+        const ctx = this.ctx;
+        ctx.clearRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+        // 绘制地面
+        ctx.fillStyle = '#2d3436';
+        ctx.fillRect(0, CONFIG.GROUND_Y, CONFIG.WIDTH, CONFIG.HEIGHT - CONFIG.GROUND_Y);
+
+        // 绘制分割线
+        ctx.strokeStyle = '#636e72';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, CONFIG.GROUND_Y);
+        ctx.lineTo(CONFIG.WIDTH, CONFIG.GROUND_Y);
+        ctx.stroke();
+
+        // 绘制棍子
+        this.sticks.forEach(stick => {
+          ctx.fillStyle = '#dfe6e9';
+          ctx.fillRect(
+            stick.x - CONFIG.STICK_WIDTH / 2,
+            CONFIG.STICK_START_Y,
+            CONFIG.STICK_WIDTH,
+            stick.y - CONFIG.STICK_START_Y
+          );
+
+          // 棍子顶部
+          ctx.fillStyle = '#b2bec3';
+          ctx.fillRect(
+            stick.x - CONFIG.STICK_WIDTH / 2 - 4,
+            CONFIG.STICK_START_Y - 4,
+            CONFIG.STICK_WIDTH + 8,
+            12
+          );
+        });
+
+        // 绘制棍子上的球
+        this.sticks.forEach(stick => {
+          stick.balls.forEach((ball, index) => {
+            this.drawBall(ball, index);
+          });
+        });
+
+        // 绘制溶解中的球
+        this.dissolvingBalls.forEach(b => {
+          ctx.globalAlpha = b.opacity;
+          this.drawBall(b, 0);
+          ctx.globalAlpha = 1;
+        });
+
+        // 绘制预览球
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fillRect(10, 20, 80, 60);
+        ctx.fillStyle = '#fff';
+        ctx.font = '12px Arial';
+        ctx.fillText('下一个', 20, 38);
+        this.drawBall(this.nextBall, 0);
+
+        // 绘制当前球
+        if (this.currentBall && this.gamePhase !== 'gameover') {
+          this.drawBall(this.currentBall, 0);
+
+          // 绘制发射台
+          ctx.fillStyle = '#74b9ff';
+          ctx.fillRect(CONFIG.WIDTH / 2 - 25, CONFIG.LAUNCHER_Y + 30, 50, 15);
+        }
+
+        // 绘制轨迹预览
+        if (this.gamePhase === 'aiming') {
+          this.drawTrajectoryPreview();
+        }
+
+        // 绘制分数
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 24px Arial';
+        ctx.fillText(`分数: ${this.score}`, CONFIG.WIDTH - 130, 40);
+
+        // 游戏结束
+        if (this.gamePhase === 'gameover') {
+          ctx.fillStyle = 'rgba(0,0,0,0.7)';
+          ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+          ctx.fillStyle = '#fff';
+          ctx.font = 'bold 40px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('游戏结束', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 - 40);
+
+          ctx.font = '24px Arial';
+          ctx.fillText(`最终分数: ${this.score}`, CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 10);
+
+          ctx.font = '18px Arial';
+          ctx.fillText('点击重新开始', CONFIG.WIDTH / 2, CONFIG.HEIGHT / 2 + 60);
+          ctx.textAlign = 'left';
+
+          this.canvas.onclick = () => this.restart();
+          this.canvas.onclick = () => location.reload();
+        }
+      }
+
+      drawBall(ball, zIndex) {
+        const ctx = this.ctx;
+        const r = CONFIG.BALL_RADIUS * (ball.scale || 1);
+
+        ctx.globalAlpha = ball.opacity !== undefined ? ball.opacity : 1;
+
+        // 球体
+        ctx.beginPath();
+        ctx.arc(ball.x, ball.y, r, 0, Math.PI * 2);
+        ctx.fillStyle = ball.color;
+        ctx.fill();
+
+        // 高光
+        ctx.beginPath();
+        ctx.arc(ball.x - r * 0.3, ball.y - r * 0.3, r * 0.3, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.fill();
+
+        // 数字
+        ctx.fillStyle = '#fff';
+        ctx.font = `bold ${Math.floor(r * 0.9)}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ball.level, ball.x, ball.y);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+
+        ctx.globalAlpha = 1;
+      }
+
+      drawTrajectoryPreview() {
+        const ctx = this.ctx;
+        const dx = this.touchCurrentX - this.touchStartX;
+        const power = Math.min(Math.sqrt(dx * dx + (this.touchCurrentY - this.touchStartY) ** 2) / 100, 1.5);
+
+        const targetIndex = Math.floor(this.sticks.length / 2 + dx / 150);
+        const stickIndex = Math.max(0, Math.min(this.sticks.length - 1, targetIndex));
+        const targetStick = this.sticks[stickIndex];
+
+        const startPos = { x: this.currentBall.x, y: this.currentBall.y };
+        const endPos = { x: targetStick.x, y: targetStick.y };
+
+        const angle = Math.atan2(-(this.touchCurrentY - this.touchStartY), dx || 0.01);
+        const midY = Math.min(startPos.y, endPos.y) - power * 100;
+
+        const cp = [
+          startPos,
+          { x: startPos.x + Math.cos(angle) * power * 80, y: startPos.y - 50 },
+          { x: endPos.x - Math.cos(angle) * power * 50, y: midY },
+          endPos
+        ];
+
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(startPos.x, startPos.y);
+
+        for (let t = 0; t <= 1; t += 0.05) {
+          const pos = bezier(t, cp[0], cp[1], cp[2], cp[3]);
+          ctx.lineTo(pos.x, pos.y);
+        }
+
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // 落点标记
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.beginPath();
+        ctx.arc(endPos.x, endPos.y, 8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      restart() {
+        this.sticks.forEach(s => s.balls = []);
+        this.score = 0;
+        this.gamePhase = 'ready';
+        this.currentBall = this.createRandomBall();
+        this.currentBall.x = CONFIG.WIDTH / 2;
+        this.currentBall.y = CONFIG.LAUNCHER_Y;
+        this.nextBall = this.createRandomBall();
+        this.nextBall.x = CONFIG.PREVIEW_STICK_X;
+        this.nextBall.y = 50;
+        this.dissolvingBalls = [];
+        this.mergeLock = false;
+      }
+
+      startGameLoop() {
+        const loop = () => {
+          this.update();
+          this.draw();
+          requestAnimationFrame(loop);
+        };
+        loop();
+      }
+    }
+
+    // 启动游戏
+    new Game();
+  </script>
+</body>
+</html>
