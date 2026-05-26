@@ -71,27 +71,30 @@ public final class ConfigurationPropertySources {
 	}
 
 	/**
-	 * Attach a {@link ConfigurationPropertySource} support to the specified
-	 * {@link Environment}. Adapts each {@link PropertySource} managed by the environment
-	 * to a {@link ConfigurationPropertySource} and allows classic
-	 * {@link PropertySourcesPropertyResolver} calls to resolve using
-	 * {@link ConfigurationPropertyName configuration property names}.
+	 * 将 {@link ConfigurationPropertySource} 支持附加到指定的 {@link Environment} 中。
+	 * 将环境管理的每个 {@link PropertySource} 适配为 {@link ConfigurationPropertySource}，
+	 * 并允许经典的 {@link PropertySourcesPropertyResolver} 调用通过
+	 * {@link ConfigurationPropertyName 配置属性名}进行解析。
 	 * <p>
-	 * The attached resolver will dynamically track any additions or removals from the
-	 * underlying {@link Environment} property sources.
-	 * @param environment the source environment (must be an instance of
-	 * {@link ConfigurableEnvironment})
+	 * 附加的解析器会动态追踪底层 {@link Environment} 属性源的添加或移除。
+	 * @param environment 源环境（必须是 {@link ConfigurableEnvironment} 的实例）
 	 * @see #get(Environment)
 	 */
 	public static void attach(Environment environment) {
+		// 断言 environment 必须是 ConfigurableEnvironment 类型，否则抛出异常
 		Assert.isInstanceOf(ConfigurableEnvironment.class, environment);
+		// 获取环境的可变属性源集合
 		MutablePropertySources sources = ((ConfigurableEnvironment) environment).getPropertySources();
+		// 尝试获取已经附加过的配置属性源
 		PropertySource<?> attached = getAttached(sources);
+		// 如果尚未附加，或者已附加的属性源与当前属性源集合不一致，则创建新的配置属性源
 		if (!isUsingSources(attached, sources)) {
 			attached = new ConfigurationPropertySourcesPropertySource(ATTACHED_PROPERTY_SOURCE_NAME,
 					new SpringConfigurationPropertySources(sources));
 		}
+		// 先移除旧的附加属性源（如果存在），确保不会重复
 		sources.remove(ATTACHED_PROPERTY_SOURCE_NAME);
+		// 将配置属性源添加到最高优先级位置（首位），使其优先生效
 		sources.addFirst(attached);
 	}
 
